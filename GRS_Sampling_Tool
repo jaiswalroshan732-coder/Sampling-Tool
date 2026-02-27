@@ -1,0 +1,1972 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry
+import pandas as pd
+from datetime import datetime
+import os
+import threading
+import win32com.client
+
+
+class SamplingTool:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Sampling Tool")
+        self.root.geometry("1100x800")
+
+        # Data file path - CHANGED TO CSV
+        filepath1 = r"C:\Users\Y961\Sampling Tool\Raw Data GRS.csv"
+        filepath2 = r"C:\Users\yy21\Desktop\Sampling Tool\Raw Data GRS.csv"
+        filepath3 = r"C:\Users\yw68\Desktop\Sampling Tool\Raw Data GRS.csv"
+        filepath4 = r"C:\Users\yq06\Desktop\Sampling Tool\Raw Data GRS.csv"
+        filepath5 = r"C:\Users\cv35\Desktop\Sampling Tool\Raw Data GRS.csv"
+        filepath6 = r"C:\Users\D799\Desktop\Sampling Tool\Raw Data GRS.csv"
+
+        # Define restricted policies
+        self.restricted_policies = [
+            "C01A1",
+            "C01ON",
+            "C03Z2",
+            "C04YB",
+            "C06YE",
+            "C06YU",
+            "C0040",
+            "C032R",
+            "C0398",
+            "C0729",
+            "C0FE9",
+            "C0IJ4",
+            "C0G85",
+            "C0V07",
+            "C0NHL",
+            "C0GZL",
+            "C0R58",
+            "C0TBK",
+            "C0UBC",
+            "C0KHL",
+            "C0V52",
+            "C0Y79",
+        ]
+
+        # Track if we should apply restricted policy filter
+        self.apply_restricted_filter = False
+
+        if os.path.exists(filepath1):
+            self.data_file = filepath1
+            self.apply_restricted_filter = True
+        elif os.path.exists(filepath2):
+            self.data_file = filepath2
+            self.apply_restricted_filter = True
+        elif os.path.exists(filepath3):
+            self.data_file = filepath3
+            self.apply_restricted_filter = True
+        elif os.path.exists(filepath4):
+            self.data_file = filepath4
+            self.apply_restricted_filter = True
+        elif os.path.exists(filepath5):
+            self.data_file = filepath5
+            self.apply_restricted_filter = False
+        elif os.path.exists(filepath6):
+            self.data_file = filepath6
+            self.apply_restricted_filter = False
+        else:
+            raise FileNotFoundError("CSV file not found in either location")
+
+        # Column mapping (Excel column letters to 0-based indices)
+        self.col_indices = {
+            "ID": 0,  # Column A
+            "client_id": 1,  # Column B
+            "Assignee": 5,  # Column F
+            "Category": 8,  # Column I
+            "Category_Sub_Class": 9,  # Column J
+            "Status": 12,  # Col M
+            "Completed_DateTime": 16,  # Column Q
+        }
+
+        # Cached data
+        self.cached_data = None
+        self.is_loading = False
+
+        # Create main frame
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # ACF2 ID Mapping
+        self.acf2_mapping = self.get_acf2_mapping()
+
+        # Title
+        title_label = ttk.Label(
+            main_frame, text="Enter the Sampling filters", font=("Arial", 12, "bold")
+        )
+        title_label.grid(row=0, column=0, columnspan=2, pady=10)
+
+        # Type of Sampling (Radio buttons)
+        ttk.Label(main_frame, text="Type of Sampling:").grid(
+            row=1, column=0, sticky=tk.W, pady=5
+        )
+        self.sampling_type = tk.StringVar(value="Random")
+
+        sampling_frame = ttk.Frame(main_frame)
+        sampling_frame.grid(row=1, column=1, sticky=tk.W)
+
+        ttk.Radiobutton(
+            sampling_frame,
+            text="Random",
+            variable=self.sampling_type,
+            value="Random",
+            command=self.update_ui,
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(
+            sampling_frame,
+            text="Targeted Baseline",
+            variable=self.sampling_type,
+            value="Targeted Baseline",
+            command=self.update_ui,
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(
+            sampling_frame,
+            text="Targeted Validation",
+            variable=self.sampling_type,
+            value="Targeted Validation",
+            command=self.update_ui,
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(
+            sampling_frame,
+            text="Targeted Static",
+            variable=self.sampling_type,
+            value="Targeted Static",
+            command=self.update_ui,
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Sample Count
+        ttk.Label(main_frame, text="Sample Count:").grid(
+            row=2, column=0, sticky=tk.W, pady=5
+        )
+        self.sample_count = ttk.Entry(main_frame, width=30)
+        self.sample_count.grid(row=2, column=1, sticky=tk.W, pady=5)
+
+        # Employee Location
+        ttk.Label(main_frame, text="Employee Location:").grid(
+            row=3, column=0, sticky=tk.W, pady=5
+        )
+        self.location = ttk.Combobox(main_frame, width=28, state="readonly")
+        self.location["values"] = ("ALL", "India", "Canada")
+        self.location.grid(row=3, column=1, sticky=tk.W, pady=5)
+        self.location.bind("<<ComboboxSelected>>", self.update_csr_list)
+
+        # Client ID
+        ttk.Label(main_frame, text="Client ID (Canada QD):").grid(
+            row=4, column=0, sticky=tk.W, pady=5
+        )
+        self.client_id = ttk.Entry(main_frame, width=30)
+        self.client_id.grid(row=4, column=1, sticky=tk.W, pady=5)
+
+        # Task Type
+        ttk.Label(main_frame, text="Task Type:").grid(
+            row=5, column=0, sticky=tk.W, pady=5
+        )
+        self.task_type = ttk.Combobox(main_frame, width=28, state="readonly")
+        self.task_type["values"] = self.get_task_types()
+        self.task_type.grid(row=5, column=1, sticky=tk.W, pady=5)
+
+        # Sub Doc Type
+        ttk.Label(main_frame, text="Sub Doc Type (For Targeted):").grid(
+            row=6, column=0, sticky=tk.W, pady=5
+        )
+        self.sub_doc_type = ttk.Combobox(main_frame, width=28, state="readonly")
+        self.sub_doc_type["values"] = self.get_sub_doc_types()
+        self.sub_doc_type.grid(row=6, column=1, sticky=tk.W, pady=5)
+
+        # Intake ID
+        ttk.Label(main_frame, text="Intake ID:").grid(
+            row=7, column=0, sticky=tk.W, pady=5
+        )
+        self.intake_id = ttk.Entry(main_frame, width=30)
+        self.intake_id.grid(row=7, column=1, sticky=tk.W, pady=5)
+
+        # Start Date
+        ttk.Label(main_frame, text="Start Date:").grid(
+            row=8, column=0, sticky=tk.W, pady=5
+        )
+        self.start_date = DateEntry(
+            main_frame,
+            width=27,
+            background="darkblue",
+            foreground="white",
+            borderwidth=2,
+            date_pattern="yyyy-mm-dd",
+        )
+        self.start_date.grid(row=8, column=1, sticky=tk.W, pady=5)
+
+        # End Date
+        ttk.Label(main_frame, text="End Date:").grid(
+            row=9, column=0, sticky=tk.W, pady=5
+        )
+        self.end_date = DateEntry(
+            main_frame,
+            width=27,
+            background="darkblue",
+            foreground="white",
+            borderwidth=2,
+            date_pattern="yyyy-mm-dd",
+        )
+        self.end_date.grid(row=9, column=1, sticky=tk.W, pady=5)
+
+        # CSR Name
+        ttk.Label(main_frame, text="CSR Name:").grid(
+            row=10, column=0, sticky=tk.W, pady=5
+        )
+        self.csr_name = ttk.Combobox(main_frame, width=28, state="readonly")
+        self.csr_name["values"] = ("ALL",)
+        self.csr_name.grid(row=10, column=1, sticky=tk.W, pady=5)
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=11, column=0, columnspan=2, pady=20)
+
+        self.submit_btn = ttk.Button(button_frame, text="Submit", command=self.submit)
+        self.submit_btn.pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="Cancel", command=self.cancel).pack(
+            side=tk.LEFT, padx=10
+        )
+        ttk.Button(button_frame, text="Export", command=self.export_sample).pack(
+            side=tk.LEFT, padx=10
+        )
+        # Add Move to QA Tool button
+        ttk.Button(
+            button_frame, text="Move to QA Tool", command=self.move_to_qa_tool
+        ).pack(side=tk.LEFT, padx=10)
+
+        # Status Label
+        self.status_label = ttk.Label(main_frame, text="Ready", font=("Arial", 9))
+        self.status_label.grid(row=12, column=0, columnspan=2, pady=5)
+
+        # Results Frame
+        results_label = ttk.Label(
+            main_frame, text="Processed Records", font=("Arial", 11, "bold")
+        )
+        results_label.grid(row=13, column=0, columnspan=2, pady=10)
+
+        # Create Treeview for results
+        tree_frame = ttk.Frame(main_frame)
+        tree_frame.grid(row=14, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Scrollbars
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=11, column=0, columnspan=2, pady=20)
+
+        self.submit_btn = ttk.Button(button_frame, text="Submit", command=self.submit)
+        self.submit_btn.pack(side=tk.LEFT, padx=10)
+        ttk.Button(button_frame, text="Cancel", command=self.cancel).pack(
+            side=tk.LEFT, padx=10
+        )
+        ttk.Button(button_frame, text="Export", command=self.export_sample).pack(
+            side=tk.LEFT, padx=10
+        )
+        ttk.Button(
+            button_frame, text="Move to QA Tool", command=self.move_to_qa_tool
+        ).pack(side=tk.LEFT, padx=10)
+
+        # Add Assessment Status button
+        ttk.Button(
+            button_frame, text="Assessment Status", command=self.show_assessment_status
+        ).pack(side=tk.LEFT, padx=10)
+
+        self.results_tree = ttk.Treeview(
+            tree_frame,
+            columns=(
+                "ID",
+                "Completed DateTime",
+                "Assignee",
+                "Category",
+                "Category_Sub_Class",
+                "Client_ID",
+                "Intake_ID",
+                "ACF2ID",
+                "Remark",
+            ),
+            show="headings",
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set,
+            height=15,
+        )
+
+        tree_scroll_y.config(command=self.results_tree.yview)
+        tree_scroll_x.config(command=self.results_tree.xview)
+
+        # Define columns
+        self.results_tree.heading("ID", text="ID")
+        self.results_tree.heading("Completed DateTime", text="Completed DateTime")
+        self.results_tree.heading("Assignee", text="Assignee")
+        self.results_tree.heading("Category", text="Task Type")
+        self.results_tree.heading("Category_Sub_Class", text="Category Sub Class")
+        self.results_tree.heading("Client_ID", text="Client ID")
+        self.results_tree.heading("Intake_ID", text="Intake ID")
+        self.results_tree.heading("ACF2ID", text="ACF2ID")
+        self.results_tree.heading("Remark", text="Remark")
+
+        self.results_tree.column("ID", width=150)
+        self.results_tree.column("Completed DateTime", width=100)
+        self.results_tree.column("Assignee", width=150)
+        self.results_tree.column("Category", width=100)
+        self.results_tree.column("Category_Sub_Class", width=150)
+        self.results_tree.column("Client_ID", width=100)
+        self.results_tree.column("Intake_ID", width=100)
+        self.results_tree.column("ACF2ID", width=100)
+        self.results_tree.column("Remark", width=150)
+
+        self.results_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        tree_scroll_y.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        tree_scroll_x.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+        # Configure grid weights
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(14, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        # Store sampled data for export
+        self.sampled_data = None
+
+        self.update_ui()
+
+        # Load data in background
+        self.load_data_async()
+
+    def load_data_async(self):
+        """Load data in background thread"""
+        if not os.path.exists(self.data_file):
+            self.update_status("Data file not found!", "red")
+            return
+
+        self.is_loading = True
+        self.update_status("Loading data... Please wait", "blue")
+        self.submit_btn.config(state="disabled")
+
+        thread = threading.Thread(target=self.load_data)
+        thread.daemon = True
+        thread.start()
+
+    def load_data(self):
+        """Load only required columns from CSV file"""
+        try:
+            # Define columns to read (indices: 0, 1, 4, 5, 8, 9, 16 for A, B, E, F, I, J, Q)
+            columns_to_read = [0, 1, 2, 4, 5, 8, 9, 12, 16]
+
+            # Read CSV file with only necessary columns
+            self.cached_data = pd.read_csv(
+                self.data_file, usecols=columns_to_read, low_memory=False
+            )
+
+            # Rename columns for easier access
+            self.cached_data.columns = [
+                "ID",
+                "client_id",
+                "plan_id",
+                "intake_id",
+                "Assignee",
+                "Category",
+                "Category_Sub_Class",
+                "Status",
+                "Completed_DateTime",
+            ]
+
+            # Convert date column once
+            self.cached_data["Completed_DateTime"] = pd.to_datetime(
+                self.cached_data["Completed_DateTime"], errors="coerce"
+            )
+
+            # Remove rows with invalid dates
+            self.cached_data = self.cached_data.dropna(subset=["Completed_DateTime"])
+
+            # Strip whitespace from string columns
+            str_columns = [
+                "Assignee",
+                "Category",
+                "Category_Sub_Class",
+                "Status",
+                "plan_id",
+                "client_id",
+            ]
+            for col in str_columns:
+                self.cached_data[col] = self.cached_data[col].astype(str).str.strip()
+
+            # FILTER FOR "Resolved-Completed" ONLY
+            self.cached_data = self.cached_data[
+                self.cached_data["Status"] == "Resolved-Completed"
+            ]
+
+            # FILTER OUT IDs STARTING WITH 'T'
+            self.cached_data = self.cached_data[
+                ~self.cached_data["ID"].astype(str).str.startswith("T", na=False)
+            ]
+
+            # NEW: FILTER OUT IDs ENDING WITH HYPHEN OR PERIOD + DIGIT(S) (e.g., GRS-3150276-1, GRS-118777.1)
+            initial_count_before_filter = len(self.cached_data)
+            self.cached_data = self.cached_data[
+                ~self.cached_data["ID"]
+                .astype(str)
+                .str.contains(r"-.{0,3}$", regex=True, na=False)
+            ]
+            filtered_count = initial_count_before_filter - len(self.cached_data)
+            print(
+                f"Filtered out {filtered_count} records with IDs containing hyphen in last 4 characters"
+            )
+
+            # FILTER OUT RESTRICTED POLICIES
+            if self.apply_restricted_filter:
+                initial_count = len(self.cached_data)
+                # Convert client_id to string and filter out restricted policies
+                self.cached_data["client_id"] = (
+                    self.cached_data["client_id"].astype(str).str.strip()
+                )
+                self.cached_data = self.cached_data[
+                    ~self.cached_data["client_id"].isin(self.restricted_policies)
+                ]
+                filtered_count = initial_count - len(self.cached_data)
+                print(
+                    f"Filtered out {filtered_count} records with restricted client IDs"
+                )
+
+            # Update UI on main thread
+            self.root.after(0, self.data_loaded_callback, len(self.cached_data))
+
+        except Exception as e:
+            self.root.after(0, self.data_load_error, str(e))
+
+    def data_loaded_callback(self, record_count):
+        """Called when data loading completes"""
+        self.is_loading = False
+        self.submit_btn.config(state="normal")
+        self.update_status(f"Ready - {record_count:,} records loaded", "green")
+
+    def data_load_error(self, error_msg):
+        """Called when data loading fails"""
+        self.is_loading = False
+        self.submit_btn.config(state="normal")
+        self.update_status("Error loading data", "red")
+        messagebox.showerror("Error", f"Failed to load data: {error_msg}")
+
+    def update_status(self, message, color="black"):
+        """Update status label"""
+        self.status_label.config(text=message, foreground=color)
+        self.root.update_idletasks()
+
+    def get_task_types(self):
+        return (
+            "ALL",
+            "Amendment",
+            "Anti Money Laundering",
+            "Bankruptcy",
+            "Contribution",
+            "Contribution Monitoring",
+            "Correspondence",
+            "Enrolment",
+            "Errors & Corrections",
+            "Financial Change",
+            "General Administration",
+            "Group Choices Transfer",
+            "Life Claims",
+            "Marriage Breakdown",
+            "Missing Policyholder",
+            "New Business",
+            "NFC",
+            "Plan Documentation",
+            "Quote",
+            "Regulatory",
+            "RRIF LIF Enrolment",
+            "Service Request",
+            "Transaction Restriction Report",
+            "Withdrawal",
+            "Additional Support Required",
+            "CDS Fulfilment",
+            "CLNT: H49 PLN: 01 MEM: 108860656",
+            "CLNT: H49 PLN: 01 MEM:109499126",
+            "Coaching",
+            "Generic",
+            "Generic Case",
+            "GRS Central",
+            "GRSE and C",
+            "Internal Request",
+            "Life Events",
+            "Non Critical NIGO",
+            "Non-Financial Change",
+            "Notification",
+            "Other",
+            "Package Required",
+            "Re: New Group Choices Enrolment",
+            "Choices Enrolment",
+        )
+
+    def get_sub_doc_types(self):
+        return (
+            "ALL",
+            "Amendment",
+            "Annual Information Return",
+            "Auto Cashout",
+            "Bankruptcy",
+            "Bulk",
+            "CCC Inter-Product Transfer",
+            "CCC Inter-Product Transfer No Cheque",
+            "Cheque Attached",
+            "Cheque for Contribution",
+            "Cheque Status",
+            "Client Facing",
+            "Client Inquiry",
+            "Client Invoice",
+            "Client Report",
+            "Client Special",
+            "Closure",
+            "Complex",
+            "Contribution Breakdown",
+            "Contribution EFT Reject",
+            "Contribution Submission - Client",
+            "Contribution Submission - SLF",
+            "Contributions",
+            "Date of Termination",
+            "Demographic File",
+            "Division Pension",
+            "Division Savings",
+            "Documentation",
+            "Enrolment - NFC",
+            "Contribution Excel - Client",
+            "Excel - SLF",
+            "File Transmission",
+            "Financial Change",
+            "Financial Hardship",
+            "Fund Change",
+            "Home Buyers Plan",
+            "Inter-Client Transfer",
+            "Inter-Fund Transfer",
+            "Inter-Plan Transfer",
+            "Inter-Product Transfer",
+            "Investment Change",
+            "INVO",
+            "Invoice",
+            "Life Claims",
+            "Lifelong Learning Plan",
+            "List",
+            "Manual Scheduled Payment",
+            "Marriage Breakdown",
+            "MASI-CSF Advisor Email Inquiry",
+            "Member Inquiry",
+            "Member Not Terminated",
+            "Member Termination Notice",
+            "Member Verification of Identity",
+            "Missing Enrolment",
+            "MS MT Error",
+            "New Business",
+            "Opt Out",
+            "Overdue",
+            "Payroll Deduction",
+            "Plan Closure",
+            "Plan Finals",
+            "Plan Team",
+            "Planner",
+            "Planner Overdue",
+            "Refund of Excess Contributions",
+            "Residual Payment",
+            "Residual Payment - Non Standard",
+            "Residual Payment - Standard",
+            "Residual Payment - Write-Off Stock Dividends",
+            "Residual Payment Subdivision/Payroll Division Change",
+            "Returned Cheque",
+            "Returned Mail",
+            "Same Day",
+            "Scheduled Payment Change",
+            "Seamless",
+            "Shortened Life Expectancy",
+            "Special Scheduled Payment",
+            "Sponsor Verification of Identity",
+            "Stale Dated Cheque",
+            "Standard",
+            "Stock Letter",
+            "SunAdvantage My Savings (SAMS)",
+            "Suspense",
+            "Tax",
+            "Transfer In Notice",
+            "Transfer In-Lump Sum",
+            "Transfer Out Follow Up",
+            "Unclaimed Weekly Cheque",
+            "Unscheduled Payment",
+            "Valuation",
+            "Variance",
+            "Vesting Locking Error",
+            "W-8Ben or W-9Ben Form",
+            "Web Request",
+            "Web Request with Vesting",
+            "Withdrawal",
+            "Withdrawal EFT Reject",
+            "Withdrawals",
+            "Contribution Excel SLP Upload",
+            "Financial Change- INVO",
+            "Payout Annuities",
+            "Quo",
+            "RRIF LIF Manual-Day 1",
+            "RRIF LIF - Day 2",
+            "RRIF LIF - Day 1",
+            "RRIF LIF - Day 3",
+        )
+
+    def get_all_csrs(self):
+        return (
+            "ALL",
+            "Abhey Kalra",
+            "Abhishek Kothari",
+            "Ajay A Kumar",
+            "Akshay Sharma",
+            "Allison L Murfin",
+            "Anand Jha",
+            "Ananya Sharma",
+            "Anchal Rani",
+            "Andy Serto",
+            "Anjali Rautela",
+            "Ankit K Kumar",
+            "ANKIT SINGH Sengar",
+            "Arti Kumari",
+            "Ashima A Ashima",
+            "Ashutosh Sangwan",
+            "Bhawna Mathur",
+            "Chau Dang",
+            "Chris Noble",
+            "Christiane Bibeau",
+            "Dan Lukezic",
+            "Danielle Dykstra",
+            "Devesh Garg",
+            "Digambar Singh",
+            "Enfridah Kunaka",
+            "Eric Schuster",
+            "Ethan Posluns",
+            "Femina Malhotra",
+            "Francois Diabe",
+            "Gagan Kumar",
+            "Gaurav Gaurav",
+            "Gaurav Nasir",
+            "Gaurav Sehgal",
+            "Gaurav Verma",
+            "Girish Mayer",
+            "Harish Rawat",
+            "Harsimran S Singh",
+            "Hema Chilwal",
+            "Himani Agarwal Agarwal",
+            "Himani Rana",
+            "Ishika Singh",
+            "Jackie England",
+            "Jatin Kumar",
+            "Jennifer Zettel",
+            "Jerald Baylon",
+            "Jessica Dorvius",
+            "Jitender A Kumar",
+            "Joanne Krieger",
+            "Joshua Serré",
+            "Jyoti Jyoti",
+            "Karishma Karishma",
+            "Katerina Karagiannis",
+            "Katharine Cartwright",
+            "Kenny Patel",
+            "Kerri Schebesch",
+            "Kimberley Arnold",
+            "Kirsandra Newell",
+            "Kris Witzel",
+            "Lakshita Ghai",
+            "Lata Lata",
+            "Laxmi Rawat",
+            "Lori Myers",
+            "Luca Rosini",
+            "Macrey Rosano",
+            "Madhu k Kumari",
+            "Madhu M Madhu",
+            "Mahima Tandon",
+            "Manish Ittan",
+            "Mansi Kumari",
+            "Manvi Rathore",
+            "Maria Marando",
+            "Marina Salvatore",
+            "Mary Anne Punzalan",
+            "Meenakshi K Meenakshi",
+            "Mélissa Okounou Niekeni",
+            "Michael Mann",
+            "Mohd Nazim",
+            "Mukesh P P Kumar",
+            "Muskan Dixit",
+            "Narender Kumar",
+            "Nathalie Benoit",
+            "Navjot Singh",
+            "Navneet Kaur",
+            "Neha Dang",
+            "Nicole Paruzel",
+            "Nitish K Kumar",
+            "Onna Storey-Todd",
+            "Pankaj Joshi",
+            "Pankaj Pankaj",
+            "Paras Paras",
+            "Payal Payal",
+            "Piyush Miglani",
+            "Prabhdeep Kaur Gill",
+            "Pranjal Pranjal",
+            "Praphull Dabral",
+            "Prateek Chanan",
+            "Priya Nepal",
+            "Priyanka Srivastava",
+            "Rahul K Shah",
+            "Rajan Batra",
+            "Raju Roy",
+            "Rakesh Kumar",
+            "Ramzan Ali",
+            "Regina Toppo",
+            "Riya Wahi",
+            "Robin Hanley",
+            "Rohit Panwar",
+            "Ruchi Kumari",
+            "Rupali Rupali",
+            "Sabeen Jameel",
+            "Sagar Saini",
+            "Samantha Sage",
+            "Samia Chowdhury Sifa",
+            "Sandhya K Sandhya",
+            "Sandra Lepage",
+            "Sanyam Sanyam",
+            "Satish Kumar",
+            "Shalini Bhardwaj",
+            "Shanaton Singh Angom",
+            "Shekhar Adak",
+            "Shivanand Rai",
+            "Shivdarshan Singh",
+            "Shobhit Kundu",
+            "Shruti Vats",
+            "Shubham Srivastava",
+            "Shweta Bhardwaj",
+            "Sonali Sonali",
+            "Sujit Kumar Chakma",
+            "Sunanda Chaudhary",
+            "Susan Wade",
+            "Sushil Kumar",
+            "Svetlana Radakovic",
+            "Tammy Favron",
+            "Tanisha Gupta",
+            "Teena Thapa",
+            "Tetiana Patrashku",
+            "Umang Umang",
+            "Vaibhav S Saxena",
+            "Vaishali Sood",
+            "Vipin Kumar",
+            "Vishal SINGH Mehra",
+            "Vishesh Singh",
+            "Vritika Chopra",
+            "Yash K Chauhan",
+            "Yasmine Molisho",
+            "Yogesh Shrestha",
+            "Zeeshan Ali",
+            "Zora Jelic",
+        )
+
+    def get_canada_csrs(self):
+        return (
+            "ALL",
+            "Allison L Murfin",
+            "Chau Dang",
+            "Chris Noble",
+            "Christiane Bibeau",
+            "Dan Lukezic",
+            "Danielle Dykstra",
+            "Enfridah Kunaka",
+            "Eric Schuster",
+            "Ethan Posluns",
+            "Francois Diabe",
+            "Jackie England",
+            "Jennifer Zettel",
+            "Jerald Baylon",
+            "Jessica Dorvius",
+            "Joanne Krieger",
+            "Joshua Serré",
+            "Katerina Karagiannis",
+            "Katharine Cartwright",
+            "Kenny Patel",
+            "Kerri Schebesch",
+            "Kimberley Arnold",
+            "Kirsandra Newell",
+            "Kris Witzel",
+            "Lori Myers",
+            "Luca Rosini",
+            "Macrey Rosano",
+            "Maria Marando",
+            "Marina Salvatore",
+            "Mary Anne Punzalan",
+            "Mélissa Okounou Niekeni",
+            "Michael Mann",
+            "Nathalie Benoit",
+            "Nicole Paruzel",
+            "Onna Storey-Todd",
+            "Prabhdeep Kaur Gill",
+            "Robin Hanley",
+            "Samantha Sage",
+            "Samia Chowdhury Sifa",
+            "Sandra Lepage",
+            "Shweta Bhardwaj",
+            "Susan Wade",
+            "Svetlana Radakovic",
+            "Tammy Favron",
+            "Teena Thapa",
+            "Tetiana Patrashku",
+            "Yasmine Molisho",
+            "Zora Jelic",
+        )
+
+    def get_india_csrs(self):
+        return (
+            "ALL",
+            "Abhey Kalra",
+            "Abhishek Kothari",
+            "Ajay A Kumar",
+            "Akshay Sharma",
+            "Anand Jha",
+            "Ananya Sharma",
+            "Anchal Rani",
+            "Andy Serto",
+            "Anjali Rautela",
+            "Ankit K Kumar",
+            "ANKIT SINGH Sengar",
+            "Arti Kumari",
+            "Ashima A Ashima",
+            "Ashutosh Sangwan",
+            "Bhawna Mathur",
+            "Devesh Garg",
+            "Digambar Singh",
+            "Femina Malhotra",
+            "Gagan Kumar",
+            "Gaurav Gaurav",
+            "Gaurav Nasir",
+            "Gaurav Sehgal",
+            "Gaurav Verma",
+            "Girish Mayer",
+            "Harish Rawat",
+            "Harsimran S Singh",
+            "Hema Chilwal",
+            "Himani Agarwal Agarwal",
+            "Himani Rana",
+            "Ishika Singh",
+            "Jatin Kumar",
+            "Jitender A Kumar",
+            "Jyoti Jyoti",
+            "Karishma Karishma",
+            "Lakshita Ghai",
+            "Lata Lata",
+            "Laxmi Rawat",
+            "Madhu k Kumari",
+            "Madhu M Madhu",
+            "Mahima Tandon",
+            "Manish Ittan",
+            "Mansi Kumari",
+            "Manvi Rathore",
+            "Meenakshi K Meenakshi",
+            "Mohd Nazim",
+            "Mukesh P P Kumar",
+            "Muskan Dixit",
+            "Narender Kumar",
+            "Navjot Singh",
+            "Navneet Kaur",
+            "Neha Dang",
+            "Nitish K Kumar",
+            "Pankaj Joshi",
+            "Pankaj Pankaj",
+            "Paras Paras",
+            "Payal Payal",
+            "Piyush Miglani",
+            "Pranjal Pranjal",
+            "Praphull Dabral",
+            "Prateek Chanan",
+            "Priya Nepal",
+            "Priyanka Srivastava",
+            "Rahul K Shah",
+            "Rajan Batra",
+            "Raju Roy",
+            "Rakesh Kumar",
+            "Ramzan Ali",
+            "Regina Toppo",
+            "Riya Wahi",
+            "Rohit Panwar",
+            "Ruchi Kumari",
+            "Rupali Rupali",
+            "Sabeen Jameel",
+            "Sagar Saini",
+            "Sandhya K Sandhya",
+            "Sanyam Sanyam",
+            "Satish Kumar",
+            "Shalini Bhardwaj",
+            "Shanaton Singh Angom",
+            "Shekhar Adak",
+            "Shivanand Rai",
+            "Shivdarshan Singh",
+            "Shobhit Kundu",
+            "Shruti Vats",
+            "Shubham Srivastava",
+            "Sonali Sonali",
+            "Sujit Kumar Chakma",
+            "Sunanda Chaudhary",
+            "Sushil Kumar",
+            "Tanisha Gupta",
+            "Umang Umang",
+            "Vaibhav S Saxena",
+            "Vaishali Sood",
+            "Vipin Kumar",
+            "Vishal SINGH Mehra",
+            "Vishesh Singh",
+            "Vritika Chopra",
+            "Yash K Chauhan",
+            "Yogesh Shrestha",
+            "Zeeshan Ali",
+        )
+
+    def get_acf2_mapping(self):
+        """Returns dictionary mapping CSR names to ACF2 IDs"""
+        return {
+            "Abhey Kalra": "J614",
+            "Abhishek Kothari": "HA92",
+            "Ajay A Kumar": "J842",
+            "Akshay Sharma": "Y715",
+            "Allison L Murfin": "GW48",
+            "Anand Jha": "BP49",
+            "Ananya Sharma": "BV00",
+            "Anchal Rani": "VD60",
+            "Andy Serto": "J961",
+            "Anjali Rautela": "JJ02",
+            "Ankit K Kumar": "BP48",
+            "ANKIT SINGH Sengar": "VF32",
+            "Arti Kumari": "BK03",
+            "Ashima A Ashima": "BU61",
+            "Ashutosh Sangwan": "WF12",
+            "Bhawna Mathur": "JV72",
+            "Chau Dang": "V264",
+            "Chris Noble": "TB17",
+            "Christiane Bibeau": "CD35",
+            "Dan Lukezic": "CL90",
+            "Danielle Dykstra": "MZ15",
+            "Devesh Garg": "ZB45",
+            "Digambar Singh": "Y748",
+            "Enfridah Kunaka": "RW86",
+            "Eric Schuster": "QN76",
+            "Ethan Posluns": "A2V3",
+            "Femina Malhotra": "ZB36",
+            "Francois Diabe": "MY33",
+            "Gagan Kumar": "YY60",
+            "Gaurav Gaurav": "J721",
+            "Gaurav Nasir": "BX97",
+            "Gaurav Sehgal": "JO42",
+            "Gaurav Verma": "JV71",
+            "Girish Mayer": "JF87",
+            "Harish Rawat": "ZL74",
+            "Harsimran S Singh": "VB09",
+            "Hema Chilwal": "YJ90",
+            "Himani Agarwal Agarwal": "YG40",
+            "Himani Rana": "VA81",
+            "Ishika Singh": "VF19",
+            "Jackie England": "QV87",
+            "Jatin Kumar": "JB72",
+            "Jennifer Zettel": "V034",
+            "Jerald Baylon": "R602",
+            "Jessica Dorvius": "QO63",
+            "Jitender A Kumar": "J787",
+            "Joanne Krieger": "E30123",
+            "Joshua Serré": "A2W2",
+            "Jyoti Jyoti": "JI94",
+            "Karishma Karishma": "Y706",
+            "Katerina Karagiannis": "TB36",
+            "Katharine Cartwright": "C585",
+            "Kenny Patel": "V216",
+            "Kerri Schebesch": "MX50",
+            "Kimberley Arnold": "MB02",
+            "Kirsandra Newell": "AX79",
+            "Kris Witzel": "M776",
+            "Lakshita Ghai": "JO33",
+            "Lata Lata": "ZC90",
+            "Laxmi Rawat": "ZL89",
+            "Lori Myers": "ML79",
+            "Luca Rosini": "RL07",
+            "Macrey Rosano": "WJ07",
+            "Madhu k Kumari": "ZG67",
+            "Madhu M Madhu": "BW98",
+            "Mahima Tandon": "BW88",
+            "Manish Ittan": "ZL67",
+            "Mansi Kumari": "ZG30",
+            "Manvi Rathore": "BK05",
+            "Maria Marando": "QF82",
+            "Marina Salvatore": "AV51",
+            "Mary Anne Punzalan": "QH33",
+            "Meenakshi K Meenakshi": "VD90",
+            "Mélissa Okounou Niekeni": "RG31",
+            "Michael Mann": "NQ46",
+            "Mohd Nazim": "YZ32",
+            "Mukesh P P Kumar": "VD70",
+            "Muskan Dixit": "YR38",
+            "Narender Kumar": "Y809",
+            "Nathalie Benoit": "G009",
+            "Navjot Singh": "YM08",
+            "Navneet Kaur": "HV81",
+            "Neha Dang": "BU96",
+            "Nicole Paruzel": "C994",
+            "Nitish K Kumar": "BK67",
+            "Onna Storey-Todd": "H26877",
+            "Pankaj Joshi": "BU92",
+            "Pankaj Pankaj": "J746",
+            "Paras Paras": "ZL68",
+            "Payal Payal": "VD59",
+            "Piyush Miglani": "J630",
+            "Prabhdeep Kaur Gill": "NQ50",
+            "Pranjal Pranjal": "ZB26",
+            "Praphull Dabral": "Y751",
+            "Prateek Chanan": "ZK01",
+            "Priya Nepal": "JV75",
+            "Priyanka Srivastava": "JD15",
+            "Rahul K Shah": "YD57",
+            "Rajan Batra": "JC61",
+            "Raju Roy": "BU67",
+            "Rakesh Kumar": "J785",
+            "Ramzan Ali": "ZL51",
+            "Regina Toppo": "YZ94",
+            "Riya Wahi": "BU97",
+            "Robin Hanley": "TB32",
+            "Rohit Panwar": "YD56",
+            "Ruchi Kumari": "ZB15",
+            "Rupali Rupali": "VF29",
+            "Sabeen Jameel": "NQ44",
+            "Sagar Saini": "VF59",
+            "Samantha Sage": "M370",
+            "Samia Chowdhury Sifa": "V835",
+            "Sandhya K Sandhya": "ZF21",
+            "Sandra Lepage": "QH28",
+            "Sanyam Sanyam": "BU90",
+            "Satish Kumar": "Y898",
+            "Shalini Bhardwaj": "J130",
+            "Shanaton Singh Angom": "JF50",
+            "Shekhar Adak": "BK69",
+            "Shivanand Rai": "VD72",
+            "Shivdarshan Singh": "J963",
+            "Shobhit Kundu": "VF60",
+            "Shruti Vats": "JV78",
+            "Shubham Srivastava": "BJ60",
+            "Shweta Bhardwaj": "MN54",
+            "Sonali Sonali": "VA84",
+            "Sujit Kumar Chakma": "J819",
+            "Sunanda Chaudhary": "VD58",
+            "Susan Wade": "RU58",
+            "Sushil Kumar": "YC93",
+            "Svetlana Radakovic": "Q124",
+            "Tammy Favron": "D742",
+            "Tanisha Gupta": "JV85",
+            "Teena Thapa": "CD31",
+            "Tetiana Patrashku": "RB89",
+            "Umang Umang": "J0Y9",
+            "Vaibhav S Saxena": "VA76",
+            "Vaishali Sood": "ZI41",
+            "Vipin Kumar": "Y808",
+            "Vishal SINGH Mehra": "BU65",
+            "Vishesh Singh": "BK68",
+            "Vritika Chopra": "ZH39",
+            "Yash K Chauhan": "BU63",
+            "Yasmine Molisho": "WB85",
+            "Yogesh Shrestha": "Y679",
+            "Zeeshan Ali": "BU95",
+            "Zora Jelic": "AR92",
+        }
+
+    def map_task_type(self, category, category_sub_class):
+        """Map task types according to VBA logic"""
+        # Special mappings based on Category_Sub_Class
+        if category_sub_class == "Excel - Client":
+            return "Contribution Excel - Client"
+        elif category_sub_class == "Excel - SLF":
+            return "Contribution Excel SLF Upload"
+
+        # Standard mappings based on Category
+        task_type_mapping = {
+            "Choices Enrolment": "Choices Enrolments",
+            "Enrolment": "Enrolments",
+            "Quote": "Quotes",
+            "Non-Financial Change": "Non-Fin Change",
+            "Withdrawal": "Withdrawals",
+            "Life Event": "Life Events",
+            "Contribution": "Contributions",
+        }
+
+        return task_type_mapping.get(category, category)
+
+    def get_location_from_acf2(self, acf2_id):
+        """Determine location based on ACF2 ID"""
+        india_csrs = [
+            value
+            for key, value in self.acf2_mapping.items()
+            if key in self.get_india_csrs()
+        ]
+        if acf2_id in india_csrs:
+            return "India"
+        else:
+            return "Canada"
+
+    def update_csr_list(self, event=None):
+        location = self.location.get()
+        if location == "ALL":
+            self.csr_name["values"] = self.get_all_csrs()
+        elif location == "Canada":
+            self.csr_name["values"] = self.get_canada_csrs()
+        elif location == "India":
+            self.csr_name["values"] = self.get_india_csrs()
+        self.csr_name.set("ALL")
+
+    def update_ui(self):
+        if self.sampling_type.get() == "Random":
+            self.sub_doc_type.config(state="disabled")
+        else:
+            self.sub_doc_type.config(state="readonly")
+
+    def validate_inputs(self):
+        if not self.sample_count.get():
+            messagebox.showerror("Error", "Please enter Sample Count")
+            return False
+
+        try:
+            sample_size = int(self.sample_count.get())
+            if sample_size <= 0:
+                messagebox.showerror("Error", "Sample Count must be a positive number")
+                return False
+        except ValueError:
+            messagebox.showerror("Error", "Sample Count must be a valid number")
+            return False
+
+        if not self.task_type.get():
+            messagebox.showerror("Error", "Please select Task Type")
+            return False
+
+        if not self.location.get():
+            messagebox.showerror("Error", "Please select Employee Location")
+            return False
+
+        if not self.csr_name.get():
+            messagebox.showerror("Error", "Please select CSR Name")
+            return False
+
+        if self.sampling_type.get() != "Random":
+            if not self.sub_doc_type.get():
+                messagebox.showerror(
+                    "Error", "Please select Sub Doc Type for Targeted sampling"
+                )
+                return False
+
+        if self.start_date.get_date() > self.end_date.get_date():
+            messagebox.showerror("Error", "Start Date cannot be after End Date")
+            return False
+
+        return True
+
+    def submit(self):
+        if self.is_loading:
+            messagebox.showwarning("Please Wait", "Data is still loading. Please wait.")
+            return
+
+        if self.cached_data is None:
+            messagebox.showerror(
+                "Error", "No data loaded. Please restart the application."
+            )
+            return
+
+        if not self.validate_inputs():
+            return
+
+        # Run processing in thread to keep UI responsive
+        thread = threading.Thread(target=self.process_sample)
+        thread.daemon = True
+        thread.start()
+
+    def process_sample(self):
+        try:
+            # Update UI
+            self.root.after(0, self.update_status, "Processing...", "blue")
+            self.root.after(0, lambda: self.submit_btn.config(state="disabled"))
+            self.root.after(0, self.root.config, {"cursor": "wait"})
+
+            # Work with cached data
+            df = self.cached_data.copy()
+
+            # Filter by date range
+            start_date = pd.to_datetime(self.start_date.get_date())
+            end_date = pd.to_datetime(self.end_date.get_date())
+            filtered_df = df[
+                (df["Completed_DateTime"] >= start_date)
+                & (df["Completed_DateTime"] <= end_date)
+            ].copy()
+
+            # Filter by Task Type
+            if self.task_type.get() != "ALL":
+                filtered_df = filtered_df[
+                    filtered_df["Category"] == self.task_type.get()
+                ]
+
+            # Apply additional filters based on sampling type
+            if self.sampling_type.get() == "Random":
+                # Random sampling filters
+                if self.csr_name.get() != "ALL":
+                    filtered_df = filtered_df[
+                        filtered_df["Assignee"] == self.csr_name.get()
+                    ]
+
+                if self.client_id.get().strip():
+                    filtered_df = filtered_df[
+                        filtered_df["client_id"]
+                        .astype(str)
+                        .str.contains(
+                            self.client_id.get().strip(), case=False, na=False
+                        )
+                    ]
+
+            else:
+                # Targeted sampling filters
+                if self.sub_doc_type.get() and self.sub_doc_type.get() != "ALL":
+                    filtered_df = filtered_df[
+                        filtered_df["Category_Sub_Class"] == self.sub_doc_type.get()
+                    ]
+
+                if self.csr_name.get() != "ALL":
+                    filtered_df = filtered_df[
+                        filtered_df["Assignee"] == self.csr_name.get()
+                    ]
+
+                if self.client_id.get().strip():
+                    filtered_df = filtered_df[
+                        filtered_df["client_id"]
+                        .astype(str)
+                        .str.contains(
+                            self.client_id.get().strip(), case=False, na=False
+                        )
+                    ]
+
+            # Check if records found
+            if len(filtered_df) == 0:
+                self.root.after(0, self.show_no_records)
+                return
+
+            # Sample the data
+            sample_size = int(self.sample_count.get())
+
+            if len(filtered_df) < sample_size:
+                sampled_df = filtered_df
+                self.root.after(0, self.show_warning, len(filtered_df))
+            else:
+                if self.sampling_type.get() == "Random":
+                    sampled_df = filtered_df.sample(n=sample_size, random_state=None)
+
+                else:
+                    sampled_df = filtered_df.head(sample_size)
+
+            # Store and display results
+            self.sampled_data = sampled_df[
+                [
+                    "ID",
+                    "Completed_DateTime",
+                    "Assignee",
+                    "Category",
+                    "Category_Sub_Class",
+                    "client_id",
+                    "plan_id",  # NEW: Include plan_id
+                ]
+            ].copy()
+
+            self.root.after(0, self.display_results, sampled_df, len(filtered_df))
+
+        except Exception as e:
+            self.root.after(0, self.show_error, str(e))
+        finally:
+            self.root.after(0, lambda: self.submit_btn.config(state="normal"))
+            self.root.after(0, self.root.config, {"cursor": ""})
+
+    def show_no_records(self):
+        self.update_status("No records found", "red")
+        messagebox.showwarning(
+            "No Records", "No records found matching the selected criteria."
+        )
+
+    def show_warning(self, count):
+        messagebox.showwarning(
+            "Warning",
+            f"Only {count} records available. Sampling all available records.",
+        )
+
+    def show_error(self, error_msg):
+        self.update_status("Error occurred", "red")
+        messagebox.showerror("Error", f"An error occurred: {error_msg}")
+
+    def display_results(self, sampled_df, total_count):
+        # Clear existing results
+        for item in self.results_tree.get_children():
+            self.results_tree.delete(item)
+
+        # Get user-entered intake ID
+        user_intake_id = (
+            self.intake_id.get().strip() if self.intake_id.get().strip() else "N/A"
+        )
+
+        # Insert rows
+        for idx, row in sampled_df.iterrows():
+            assignee = str(row["Assignee"])
+            acf2_id = self.acf2_mapping.get(assignee, "N/A")
+
+            # COMBINE Client ID and Plan ID
+            plan_id_formatted = str(int(float(row["plan_id"]))).zfill(2)
+            combined_client_id = str(row["client_id"]) + "/" + plan_id_formatted
+
+            self.results_tree.insert(
+                "",
+                "end",
+                values=(
+                    str(row["ID"]),
+                    str(row["Completed_DateTime"]),
+                    assignee,
+                    str(row["Category"]),
+                    str(row["Category_Sub_Class"]),
+                    combined_client_id,
+                    user_intake_id,
+                    acf2_id,
+                    "",
+                ),
+            )
+
+        # ✅ OUTSIDE the for loop
+        self.update_status(
+            f"Complete - {len(sampled_df)} of {total_count} records sampled", "green"
+        )
+
+        messagebox.showinfo
+        (
+            "Success",
+            f"Sample extracted successfully!\n"
+            f"{len(sampled_df)} records retrieved from {total_count:,} matching records.",
+        )
+
+    def export_sample(self):
+        if self.sampled_data is None or len(self.sampled_data) == 0:
+            messagebox.showwarning(
+                "Warning", "No data to export. Please run a sample first."
+            )
+            return
+
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=f"Sampling_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            )
+
+            if file_path:
+                export_df = self.sampled_data.copy()
+                # COMBINE Client ID and Plan ID for export
+                export_df["Combined_Client_ID"] = (
+                    export_df["client_id"].astype(str)
+                    + "/"
+                    + export_df["plan_id"]
+                    .astype(float)
+                    .astype(int)
+                    .astype(str)
+                    .str.zfill(2)
+                )
+
+                export_df = export_df[
+                    [
+                        "ID",
+                        "Completed_DateTime",
+                        "Assignee",
+                        "Category",
+                        "Category_Sub_Class",
+                        "Combined_Client_ID",
+                    ]
+                ]
+
+                export_df.columns = [
+                    "ID",
+                    "Completed DateTime",
+                    "Assignee",
+                    "Task Type",
+                    "Sub Class",
+                    "Client ID",
+                ]
+                export_df.to_excel(file_path, index=False, engine="openpyxl")
+                messagebox.showinfo(
+                    "Success", f"Data exported successfully to:\n{file_path}"
+                )
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+
+    def move_to_qa_tool(self):
+        """Transfer selected record to Access QA Tool"""
+        selected_items = self.results_tree.selection()
+        if not selected_items:
+            messagebox.showwarning(
+                "Warning", "Please select a record to move to QA Tool"
+            )
+            return
+
+        try:
+            selected_item = selected_items[0]
+            values = self.results_tree.item(selected_item)["values"]
+
+            tracking_number = str(values[0])
+            transaction_date = str(values[1])
+            assignee_name = str(values[2])
+            task_type = str(values[3])
+            sub_class = str(values[4])
+            policy_number = str(values[5])
+            intake_id = str(values[6])
+            acf2_id = str(values[7])
+
+            location = self.get_location_from_acf2(acf2_id)
+            mapped_task_type = self.map_task_type(task_type, sub_class)
+
+            audit_type_mapping = {
+                "Random": "OLP Random",
+                "Targeted Baseline": "OLP Targeted - Baseline",
+                "Targeted Validation": "OLP Targeted - Validation",
+                "Targeted Static": "OLP Targeted - Static",
+            }
+            audit_type = audit_type_mapping.get(self.sampling_type.get(), "OLP Random")
+
+            self.update_status("Connecting to Access...", "blue")
+
+            try:
+                objAc = win32com.client.GetObject(None, "Access.Application")
+            except:
+                messagebox.showerror(
+                    "Error",
+                    "Could not connect to Access application.\n"
+                    "Please ensure Access is running with the Quality Assessment database open.",
+                )
+                self.update_status("Ready", "black")
+                return
+
+            try:
+                assessment_form = objAc.Forms("assessment_f")
+            except:
+                messagebox.showerror(
+                    "Error",
+                    "Assessment form not found in Access.\n"
+                    "Please ensure the 'assessment_f' form is open.",
+                )
+                self.update_status("Ready", "black")
+                return
+
+            self.update_status("Populating QA Tool...", "blue")
+
+            assessment_form.Controls("txtTrackingNumber").Value = tracking_number
+            assessment_form.Controls("txtEmployeeACF2").Value = acf2_id
+            assessment_form.Controls("txtEmployeeName").Value = assignee_name
+            assessment_form.Controls("txtTransactionDate").Value = transaction_date
+            assessment_form.Controls("txtPolicy").Value = policy_number
+            assessment_form.Controls("cboTaskType").Value = mapped_task_type
+            assessment_form.Controls("cboLocation").Value = location
+            assessment_form.Controls("cboValueStream").Value = "GRS"
+            assessment_form.Controls("txtPSID").Value = intake_id
+            assessment_form.Controls("cboAuditType").Value = audit_type
+
+            self.update_status("Data transferred successfully!", "green")
+            messagebox.showinfo(
+                "Success",
+                f"Record {tracking_number} transferred to QA Tool successfully!\n\n"
+                f"Employee: {assignee_name}\n"
+                f"Location: {location}\n"
+                f"Audit Type: {audit_type}",
+            )
+
+            # Show assessment status dialog
+            assessment_status = self.show_assessment_status_dialog()
+
+            # Update CSV file with assessment status
+            csv_updated = self.update_sample_data_csv(
+                tracking_number=tracking_number,
+                transaction_date=transaction_date,
+                assignee_name=assignee_name,
+                task_type=mapped_task_type,
+                sub_class=sub_class,
+                policy_number=policy_number,
+                intake_id=intake_id,
+                acf2_id=acf2_id,
+                status="Transferred to QA Tool",
+                location=location,
+                audit_type=audit_type,
+                assessment_status=assessment_status if assessment_status else "",
+            )
+
+            if csv_updated:
+                print(f"CSV updated successfully for {tracking_number}")
+
+            # Update remark in tree
+            current_values = list(values)
+            current_values[8] = "Moved to QA Tool"
+            self.results_tree.item(selected_item, values=current_values)
+
+        except Exception as e:
+            messagebox.showerror(
+                "Error", f"Failed to transfer data to QA Tool:\n{str(e)}"
+            )
+            self.update_status("Ready", "black")
+
+    def show_assessment_status_dialog(self):
+        """Show dialog to select Assessment Done or Skipped"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Assessment Status")
+        dialog.geometry("300x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        result = [None]  # Use list to store result from nested function
+
+        ttk.Label(
+            dialog, text="Select Assessment Status:", font=("Arial", 10, "bold")
+        ).pack(pady=20)
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        def select_status(status):
+            result[0] = status
+            dialog.destroy()
+
+        ttk.Button(
+            button_frame,
+            text="Assessment Done",
+            command=lambda: select_status("Assessment Done"),
+        ).pack(side=tk.LEFT, padx=10)
+
+        ttk.Button(
+            button_frame, text="Skipped", command=lambda: select_status("Skipped")
+        ).pack(side=tk.LEFT, padx=10)
+
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(
+            side=tk.LEFT, padx=10
+        )
+
+        # Wait for dialog to close
+        self.root.wait_window(dialog)
+
+        return result[0]
+
+
+def update_sample_data_csv(
+    self,
+    tracking_number,
+    transaction_date,
+    assignee_name,
+    task_type,
+    sub_class,
+    policy_number,
+    intake_id,
+    acf2_id,
+    status,
+    location,
+    audit_type,
+    assessment_status="",
+):
+    """Update Sample Data CSV files with the new record"""
+
+    # Define all CSV file paths in priority order
+    csv_paths = [
+        r"C:\Users\Y961\Sampling Tool\Sample Data GRS.csv",
+        r"C:\Users\yy21\Desktop\Sampling Tool\Sample Data GRS.csv",
+        r"C:\Users\YW68\Sampling Tool\Sample Data GRS.csv",
+        r"C:\Users\YQ06\Sampling Tool\Sample Data GRS.csv",
+        r"C:\Users\CV35\Sampling Tool\Sample Data GRS.csv",
+        r"C:\Users\D799\Sampling Tool\Sample Data GRS.csv",
+    ]
+
+    # Map assessor names to each path
+    assessor_mapping = {
+        0: "Pooja",
+        1: "Roushan",
+        2: "Amit",
+        3: "Rajesh",
+        4: "Melanie",
+        5: "Tracee",
+    }
+
+    # Try each path until one succeeds
+    for path_index, csv_path in enumerate(csv_paths):
+        try:
+            # Check if directory exists
+            directory = os.path.dirname(csv_path)
+            if not os.path.exists(directory):
+                print(f"Directory not found: {directory}")
+                continue
+
+            # Get assessor name for this path
+            assessor_name = assessor_mapping.get(path_index, "Unknown")
+
+            # Prepare the data row with assessor name
+            new_row = {
+                "Tracking_Number": tracking_number,
+                "Transaction_Date": transaction_date,
+                "Assignee": assignee_name,
+                "Task_Type": task_type,
+                "Sub_Class": sub_class,
+                "Policy_Number": policy_number,
+                "Intake_ID": intake_id,
+                "ACF2_ID": acf2_id,
+                "Assessment_Status": assessment_status,
+                "Assessor_Name": assessor_name,
+                "Location": location,
+                "Audit_Type": audit_type,
+                "Status": status,
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            # Check if file exists
+            if os.path.exists(csv_path):
+                # Read existing data
+                try:
+                    existing_df = pd.read_csv(csv_path)
+
+                    # Ensure we have the correct columns
+                    if existing_df.empty:
+                        existing_df = pd.DataFrame(columns=new_row.keys())
+                    else:
+                        # Add new columns if they don't exist
+                        for col in new_row.keys():
+                            if col not in existing_df.columns:
+                                existing_df[col] = ""
+
+                except Exception as read_error:
+                    print(f"Error reading existing file: {read_error}")
+                    # Create new dataframe with proper columns
+                    existing_df = pd.DataFrame(columns=new_row.keys())
+
+                # Append new row
+                new_df = pd.DataFrame([new_row])
+                updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+
+            else:
+                # Create new file
+                updated_df = pd.DataFrame([new_row])
+
+            # Write to CSV
+            updated_df.to_csv(csv_path, index=False, mode="w")
+
+            print(f"Successfully updated: {csv_path}")
+            print(f"Assessor: {assessor_name}")
+            print(f"Total rows in file: {len(updated_df) + 1}")
+            return True
+
+        except PermissionError:
+            print(
+                f"Permission denied: {csv_path} (file may be open in another program)"
+            )
+            continue
+
+        except Exception as e:
+            print(f"Failed to access {csv_path}: {str(e)}")
+            continue
+
+    # If we get here, none of the paths worked
+    print("ERROR: Could not find or access any valid CSV path")
+    messagebox.showerror(
+        "Error",
+        "Could not locate Sample Data CSV file.\n"
+        "Please ensure the file is not open in Excel and at least one configured path exists.",
+    )
+    return False
+
+
+def show_assessment_status(self):
+    """Show Assessment Status window with filtering and reporting"""
+
+    # Create new window
+    status_window = tk.Toplevel(self.root)
+    status_window.title("Assessment Status Report")
+    status_window.geometry("900x700")
+
+    # Main frame
+    main_frame = ttk.Frame(status_window, padding="10")
+    main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    # Title
+    ttk.Label(
+        main_frame, text="Assessment Status Report", font=("Arial", 14, "bold")
+    ).grid(row=0, column=0, columnspan=4, pady=10)
+
+    # Date Range
+    ttk.Label(main_frame, text="Start Date:").grid(
+        row=1, column=0, sticky=tk.W, pady=5, padx=5
+    )
+    start_date = DateEntry(
+        main_frame,
+        width=20,
+        background="darkblue",
+        foreground="white",
+        borderwidth=2,
+        date_pattern="yyyy-mm-dd",
+    )
+    start_date.grid(row=1, column=1, sticky=tk.W, pady=5, padx=5)
+
+    ttk.Label(main_frame, text="End Date:").grid(
+        row=1, column=2, sticky=tk.W, pady=5, padx=5
+    )
+    end_date = DateEntry(
+        main_frame,
+        width=20,
+        background="darkblue",
+        foreground="white",
+        borderwidth=2,
+        date_pattern="yyyy-mm-dd",
+    )
+    end_date.grid(row=1, column=3, sticky=tk.W, pady=5, padx=5)
+
+    # Assessor Name dropdown
+    ttk.Label(main_frame, text="Assessor Name:").grid(
+        row=2, column=0, sticky=tk.W, pady=5, padx=5
+    )
+    assessor_combo = ttk.Combobox(main_frame, width=28, state="readonly")
+    assessor_combo["values"] = (
+        "ALL",
+        "Pooja",
+        "Roushan",
+        "Amit",
+        "Rajesh",
+        "Melanie",
+        "Tracee",
+    )
+    assessor_combo.set("ALL")
+    assessor_combo.grid(row=2, column=1, sticky=tk.W, pady=5, padx=5)
+
+    # Audit Type dropdown
+    ttk.Label(main_frame, text="Audit Type:").grid(
+        row=2, column=2, sticky=tk.W, pady=5, padx=5
+    )
+    audit_type_combo = ttk.Combobox(main_frame, width=28, state="readonly")
+    audit_type_combo["values"] = (
+        "ALL",
+        "OLP Random",
+        "OLP Targeted - Baseline",
+        "OLP Targeted - Validation",
+        "OLP Targeted - Static",
+    )
+    audit_type_combo.set("ALL")
+    audit_type_combo.grid(row=2, column=3, sticky=tk.W, pady=5, padx=5)
+
+    # Generate Report button
+    def generate_report():
+        try:
+            # Find the CSV file
+            csv_paths = [
+                r"C:\Users\Y961\Sampling Tool\Sample Data GRS.csv",
+                r"C:\Users\yy21\Desktop\Sampling Tool\Sample Data GRS.csv",
+                r"C:\Users\YW68\Sampling Tool\Sample Data GRS.csv",
+                r"C:\Users\YQ06\Sampling Tool\Sample Data GRS.csv",
+                r"C:\Users\CV35\Sampling Tool\Sample Data GRS.csv",
+                r"C:\Users\D799\Sampling Tool\Sample Data GRS.csv",
+            ]
+
+            csv_data = None
+            for csv_path in csv_paths:
+                if os.path.exists(csv_path):
+                    try:
+                        csv_data = pd.read_csv(csv_path)
+                        break
+                    except Exception as e:
+                        continue
+
+            if csv_data is None or csv_data.empty:
+                messagebox.showwarning(
+                    "No Data", "Sample Data GRS.csv file not found or is empty."
+                )
+                return
+
+            # Filter by date range
+            start = pd.to_datetime(start_date.get_date())
+            end = pd.to_datetime(end_date.get_date())
+
+            csv_data["Transaction_Date"] = pd.to_datetime(
+                csv_data["Transaction_Date"], errors="coerce"
+            )
+            filtered_data = csv_data[
+                (csv_data["Transaction_Date"] >= start)
+                & (csv_data["Transaction_Date"] <= end)
+            ].copy()
+
+            # Filter by Assessor
+            if assessor_combo.get() != "ALL":
+                filtered_data = filtered_data[
+                    filtered_data["Assessor_Name"] == assessor_combo.get()
+                ]
+
+            # Filter by Audit Type
+            if audit_type_combo.get() != "ALL":
+                filtered_data = filtered_data[
+                    filtered_data["Audit_Type"] == audit_type_combo.get()
+                ]
+
+            # Count Assessment Done by Task Type and Audit Type
+            assessment_done = filtered_data[
+                filtered_data["Assessment_Status"] == "Assessment Done"
+            ]
+
+            # Clear existing results
+            for item in results_tree.get_children():
+                results_tree.delete(item)
+
+            if assessment_done.empty:
+                status_label.config(
+                    text="No assessment records found for selected criteria",
+                    foreground="red",
+                )
+                return
+
+            # Group by Task Type and Audit Type
+            summary = (
+                assessment_done.groupby(["Task_Type", "Audit_Type"])
+                .size()
+                .reset_index(name="Count")
+            )
+
+            # Insert into treeview
+            for _, row in summary.iterrows():
+                results_tree.insert(
+                    "",
+                    "end",
+                    values=(row["Task_Type"], row["Audit_Type"], row["Count"]),
+                )
+
+            # Update status
+            total_assessments = len(assessment_done)
+            status_label.config(
+                text=f"Total Assessments Done: {total_assessments}",
+                foreground="green",
+            )
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to generate report:\n{str(e)}")
+            status_label.config(text="Error generating report", foreground="red")
+
+    ttk.Button(main_frame, text="Generate Report", command=generate_report).grid(
+        row=3, column=0, columnspan=4, pady=15
+    )
+
+    # Status Label
+    status_label = ttk.Label(main_frame, text="Ready", font=("Arial", 9))
+    status_label.grid(row=4, column=0, columnspan=4, pady=5)
+
+    # Results Frame
+    results_label = ttk.Label(
+        main_frame,
+        text="Assessment Summary by Task Type and Audit Type",
+        font=("Arial", 11, "bold"),
+    )
+    results_label.grid(row=5, column=0, columnspan=4, pady=10)
+
+    # Create Treeview for results
+    tree_frame = ttk.Frame(main_frame)
+    tree_frame.grid(row=6, column=0, columnspan=4, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    # Scrollbars
+    tree_scroll_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+    tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+
+    results_tree = ttk.Treeview(
+        tree_frame,
+        columns=("Task_Type", "Audit_Type", "Count"),
+        show="headings",
+        yscrollcommand=tree_scroll_y.set,
+        xscrollcommand=tree_scroll_x.set,
+        height=20,
+    )
+
+    tree_scroll_y.config(command=results_tree.yview)
+    tree_scroll_x.config(command=results_tree.xview)
+
+    # Define columns
+    results_tree.heading("Task_Type", text="Task Type")
+    results_tree.heading("Audit_Type", text="Audit Type")
+    results_tree.heading("Count", text="Assessment Count")
+
+    results_tree.column("Task_Type", width=300)
+    results_tree.column("Audit_Type", width=250)
+    results_tree.column("Count", width=150)
+
+    results_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    tree_scroll_y.grid(row=0, column=1, sticky=(tk.N, tk.S))
+    tree_scroll_x.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+    # Configure grid weights
+    status_window.columnconfigure(0, weight=1)
+    status_window.rowconfigure(0, weight=1)
+    main_frame.columnconfigure(1, weight=1)
+    main_frame.columnconfigure(3, weight=1)
+    main_frame.rowconfigure(6, weight=1)
+    tree_frame.columnconfigure(0, weight=1)
+    tree_frame.rowconfigure(0, weight=1)
+
+    # Export function
+    def export_report():
+        if results_tree.get_children():
+            try:
+                file_path = filedialog.asksaveasfilename(
+                    defaultextension=".xlsx",
+                    filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                    initialfile=f"Assessment_Status_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                )
+
+                if file_path:
+                    # Extract data from treeview
+                    data = []
+                    for item in results_tree.get_children():
+                        values = results_tree.item(item)["values"]
+                        data.append(values)
+
+                    export_df = pd.DataFrame(
+                        data, columns=["Task Type", "Audit Type", "Assessment Count"]
+                    )
+
+                    export_df.to_excel(file_path, index=False, engine="openpyxl")
+                    messagebox.showinfo(
+                        "Success", f"Report exported successfully to:\n{file_path}"
+                    )
+            except Exception as e:
+                messagebox.showerror("Error", f"Export failed: {str(e)}")
+        else:
+            messagebox.showwarning("Warning", "No data to export")
+
+    # Export button
+    ttk.Button(main_frame, text="Export Report", command=export_report).grid(
+        row=7, column=0, columnspan=4, pady=10
+    )
+
+
+def cancel(self):
+    self.sample_count.delete(0, tk.END)
+    self.location.set("")
+    self.client_id.delete(0, tk.END)
+    self.task_type.set("")
+    self.sub_doc_type.set("")
+    self.intake_id.delete(0, tk.END)
+    self.csr_name.set("")
+
+    for item in self.results_tree.get_children():
+        self.results_tree.delete(item)
+
+    self.sampled_data = None
+    self.update_status("Ready", "black")
+
+
+if __name__ == "__main__":
+    try:
+        root = tk.Tk()
+        app = SamplingTool(root)
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\nApplication closed by user.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
